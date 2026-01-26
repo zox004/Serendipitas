@@ -1,31 +1,35 @@
+import time
 import rlcard
-from agents.random_agent import TexasRandomAgent
+from rlcard.agents import RandomAgent
 
-def run_day1_analysis():
-    # 1. 환경 생성 (No-Limit Texas Hold'em)
-    env = rlcard.make("no-limit-holdem", config={'allow_step_back': True})
-    
-    # 2. 에이전트 설정 (2인 플레이)
-    agent = TexasRandomAgent(num_actions=env.num_actions)
-    env.set_agents([agent, agent])
+def benchmark(num_hands=10000):
+    # 1. 환경 생성 (Heads-Up No-Limit Hold'em)
+    env = rlcard.make('no-limit-holdem', config={'seed': 42})
 
-    print(f"변수 정보:")
-    print(f"- 액션 개수: {env.num_actions}")
-    print(f"- 에이전트 수: {env.num_players}")
+    # 2. 랜덤 에이전트 설정 (단순 속도 측정용)
+    agents = [RandomAgent(num_actions=env.num_actions) for _ in range(env.num_players)]
+    env.set_agents(agents)
 
-    # 3. 게임 1회 실행 및 데이터 구조 분석
-    trajectories, payoffs = env.run(is_training=False)
-    
-    # 첫 번째 스텝의 관측치 데이터 출력
-    first_state = trajectories[0][0]
-    print("\n--- State 데이터 구조 분석 ---")
-    print(f"Key 목록: {first_state.keys()}")
-    print(f"Obs 벡터 형태: {first_state['obs'].shape}")
-    print(f"가능한 액션: {first_state['legal_actions']}")
-    print(f"Raw 관측치(예시): {first_state['raw_obs']['hand']}") # 내 손패 확인
-    
-    print("\n--- 게임 결과 ---")
-    print(f"최종 수익(Payoffs): {payoffs}")
+    print(f"Starting benchmark for {num_hands} hands...")
+    start_time = time.time()
 
-if __name__ == "__main__":
-    run_day1_analysis()
+    for _ in range(num_hands):
+        trajectories, payoffs = env.run(is_training=False)
+
+    end_time = time.time()
+    duration = end_time - start_time
+    fps = num_hands / duration
+
+    print(f"-" * 30)
+    print(f"Total Time: {duration:.4f} seconds")
+    print(f"Speed: {fps:.2f} hands/second")
+    print(f"-" * 30)
+
+    # 목표 달성 여부 확인
+    if fps > 1000:
+        print("✅ Status: PASS (충분한 속도입니다)")
+    else:
+        print("⚠️ Status: WARNING (최적화가 필요할 수 있습니다)")
+
+if __name__ == '__main__':
+    benchmark()
