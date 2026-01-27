@@ -5,7 +5,7 @@ import numpy as np
 from src.model.network import AlphaHoldemNetwork
 
 class PPOAgent:
-    def __init__(self, input_dim=54, action_dim=6, lr=0.0003, gamma=0.99, K_epochs=3, eps_clip=0.2):
+    def __init__(self, input_dim=54, action_dim=5, lr=0.0003, gamma=0.99, K_epochs=3, eps_clip=0.2):
         self.gamma = gamma          # 할인율 (미래 보상 중요도)
         self.eps_clip = eps_clip    # 급발진 방지 규제 (20%)
         self.K_epochs = K_epochs    # 데이터 재사용 횟수
