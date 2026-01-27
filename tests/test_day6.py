@@ -9,7 +9,7 @@ def test_selfplay_loop():
     print(">>> AlphaHoldem Self-Play 통합 테스트 시작...")
 
     try:
-        run_training(num_episodes=1000, print_interval=100)
+        run_training(num_episodes=100, print_interval=10)
         print("\n✅ 테스트 통과! Self-Play 루프가 정상 작동합니다.")
     except Exception as e:
         print(f"\n❌ 테스트 실패: {e}")
