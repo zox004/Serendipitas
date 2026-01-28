@@ -14,6 +14,10 @@ class AlphaHoldemConfig:
     ACTION_DIM = 5
     
     # --- 2. 학습(Training) 하이퍼파라미터 ---
+    # --- [New] 모델 구조 설정 ---
+    HIDDEN_DIM = 256      # 뉴런 개수 (방 크기)
+    NUM_RES_BLOCKS = 3    # ResNet 블록 개수 (아파트 층수)
+    
     LR = 0.0002           # 학습률
     GAMMA = 0.99          # 할인율 (미래 보상의 가치)
     K_EPOCHS = 4          # PPO 업데이트 반복 횟수
@@ -29,5 +33,5 @@ class AlphaHoldemConfig:
     # --- 3. 시스템 설정 ---
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     SEED = 42
-    LOG_DIR = "runs/AlphaHoldem_Day10"
-    MODEL_PATH = "alpha_holdem_day10.pth"
+    LOG_DIR = "runs/AlphaHoldem_Day11"
+    MODEL_PATH = "alpha_holdem_day11.pth"
