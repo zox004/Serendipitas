@@ -1,15 +1,13 @@
+# 파일명: src/train_selfplay.py 수정
 import os
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import rlcard
+from src.config import AlphaHoldemConfig as cfg  # 별칭 cfg로 사용
 from src.env.wrappers import AlphaHoldemWrapper
 from src.agent.ppo_agent import PPOAgent
 
-# [수정됨] 평가(Evaluate) 때는 실제 칩 개수를 그대로 봅니다 (직관성을 위해)
 def evaluate(agent, env, num_games=20):
     wins = 0
     total_rewards = 0
@@ -24,9 +22,9 @@ def evaluate(agent, env, num_games=20):
             else:
                 raw_state = env.env.get_state(player_id)
                 if isinstance(raw_state['legal_actions'], dict):
-                    legal_actions = list(raw_state['legal_actions'].keys())
+                     legal_actions = list(raw_state['legal_actions'].keys())
                 else:
-                    legal_actions = raw_state['legal_actions']
+                     legal_actions = raw_state['legal_actions']
                 action = np.random.choice(legal_actions)
 
             next_state, next_player_id = env.step(action)
@@ -34,84 +32,84 @@ def evaluate(agent, env, num_games=20):
             if next_state is None:
                 done = True
                 payoffs = env.env.get_payoffs()
-                total_rewards += payoffs[0] # 여기는 나누기 안 함 (실제 칩 확인)
-                if payoffs[0] > 0:
-                    wins += 1
+                total_rewards += payoffs[0]
+                if payoffs[0] > 0: wins += 1
             else:
                 state = next_state
                 player_id = next_player_id
                 
     return wins / num_games * 100, total_rewards / num_games
 
-def run_training(num_episodes=5000, eval_interval=100):
-    writer = SummaryWriter("runs/AlphaHoldem_Day9") # 로그 폴더 변경
+def run_training():
+    writer = SummaryWriter(cfg.LOG_DIR)
+    print(f"🔧 설정 로드 완료: {cfg.NUM_EPISODES} Episodes, LR={cfg.LR}")
     
-    # RLCard 기본 칩 설정 (chips_for_each=100)
-    reward_scale = 100.0 
-    
-    raw_env = rlcard.make('no-limit-holdem', config={'seed': 42})
+    raw_env = rlcard.make('no-limit-holdem', config={'seed': cfg.SEED})
     env = AlphaHoldemWrapper(raw_env)
     
-    # Input=107, Action=5
-    agent = PPOAgent(input_dim=107, action_dim=5, lr=0.0002, K_epochs=4, eps_clip=0.2)
+    agent = PPOAgent(
+        input_dim=cfg.INPUT_DIM, 
+        action_dim=cfg.ACTION_DIM, 
+        lr=cfg.LR, 
+        K_epochs=cfg.K_EPOCHS, 
+        eps_clip=cfg.EPS_CLIP
+    )
     
-    print(f"🚀 학습 시작! (Reward Scale: 1/{reward_scale} 적용)")
+    # [추가] 최고 승률 기록용 변수
+    best_win_rate = -1.0
+    
+    print(f"🚀 학습 시작! (Reward Scale: 1/{cfg.REWARD_SCALE} applied)")
 
-    for episode in range(1, num_episodes + 1):
+    for episode in range(1, cfg.NUM_EPISODES + 1):
+        # ... (게임 진행 및 데이터 수집 코드는 기존과 동일) ...
         state, player_id = env.reset()
         episode_memory = {0: [], 1: []}
         done = False
-        
         while not done:
             action, probs = agent.policy.get_action(state)
             action_prob = probs[0][action].item()
-            
-            episode_memory[player_id].append({
-                's': state, 'a': action, 'prob': action_prob
-            })
-
+            episode_memory[player_id].append({'s': state, 'a': action, 'prob': action_prob})
             next_state, next_player_id = env.step(action)
+            if next_state is None: done = True
+            else: state, player_id = next_state, next_player_id
             
-            if next_state is None:
-                done = True
-            else:
-                state = next_state
-                player_id = next_player_id
-
-        # --- [핵심 수정 구간] 보상 정규화 적용 ---
+        # ... (보상 정규화 및 데이터 저장 코드는 기존과 동일) ...
         payoffs = env.env.get_payoffs()
-        
         for pid in [0, 1]:
-            # 실제 칩(+100)을 스케일링(+1.0)해서 학습 데이터에 넣음
-            raw_reward = payoffs[pid]
-            normalized_reward = raw_reward / reward_scale 
-            
+            normalized_reward = payoffs[pid] / cfg.REWARD_SCALE
             memory = episode_memory[pid]
             for i, step_data in enumerate(memory):
                 s, a, prob = step_data['s'], step_data['a'], step_data['prob']
                 ns = memory[i+1]['s'] if i < len(memory)-1 else s
                 d = False if i < len(memory)-1 else True
-                
-                # 정규화된 보상(normalized_reward) 주입
                 agent.put_data((s, a, normalized_reward, ns, d, prob))
 
-        if len(agent.data) >= 256:
+        # 학습
+        if len(agent.data) >= cfg.BATCH_SIZE:
             loss = agent.train_net()
             writer.add_scalar("Training/Loss", loss, episode)
 
-        if episode % eval_interval == 0:
-            # 평가는 기존처럼 (사람이 보기 편하게)
+        # 평가 및 저장
+        if episode % cfg.EVAL_INTERVAL == 0:
             win_rate, avg_reward = evaluate(agent, env, num_games=200)
             
-            print(f"Episode {episode}: Eval WinRate = {win_rate:.1f}% | AvgReward = {avg_reward:.2f} chips")
+            print(f"Episode {episode}: WinRate={win_rate:.1f}% | Reward={avg_reward:.2f}")
             
             writer.add_scalar("Evaluation/WinRate_vs_Random", win_rate, episode)
             writer.add_scalar("Evaluation/AvgReward_vs_Random", avg_reward, episode)
             
-            torch.save(agent.policy.state_dict(), "alpha_holdem_day9.pth")
+            # 1. 최신 모델은 항상 저장 (혹시 모르니)
+            torch.save(agent.policy.state_dict(), cfg.MODEL_PATH)
+            
+            # 2. [핵심] 역대 최고 승률 갱신 시 별도 저장 (Best Model)
+            if win_rate > best_win_rate:
+                best_win_rate = win_rate
+                best_path = cfg.MODEL_PATH.replace(".pth", "_best.pth")
+                torch.save(agent.policy.state_dict(), best_path)
+                print(f"🏆 최고 승률 갱신! ({best_win_rate:.1f}%) -> {best_path} 저장됨")
 
     writer.close()
-    print("✅ 학습 종료!")
+    print("✅ 모든 학습이 완료되었습니다.")
 
 if __name__ == "__main__":
     run_training()
