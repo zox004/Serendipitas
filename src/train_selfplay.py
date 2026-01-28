@@ -65,7 +65,7 @@ def run_training(num_episodes=5000, eval_interval=100):
     env = AlphaHoldemWrapper(raw_env)
     
     # 액션 5개로 통일된 설정
-    agent = PPOAgent(input_dim=54, action_dim=5, lr=0.0002, K_epochs=4, eps_clip=0.2)
+    agent = PPOAgent(input_dim=107, action_dim=5, lr=0.0002, K_epochs=4, eps_clip=0.2)
     
     print(f"🚀 학습 시작! (총 {num_episodes} 에피소드, 텐서보드로 모니터링 중...)")
 

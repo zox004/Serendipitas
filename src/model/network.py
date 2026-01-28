@@ -9,7 +9,7 @@ class AlphaHoldemNetwork(nn.Module):
     - Actor Output: 6개 행동에 대한 확률 (Logits)
     - Critic Output: 현재 상태의 가치 (Value)
     """
-    def __init__(self, input_dim=54, action_dim=5, hidden_dim=256):
+    def __init__(self, input_dim=107, action_dim=5, hidden_dim=256):
         super(AlphaHoldemNetwork, self).__init__()
         
         # 1. Feature Extractor (공통 정보를 처리하는 앞단)
