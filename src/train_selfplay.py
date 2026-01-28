@@ -6,15 +6,11 @@ import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import rlcard
-from rlcard.agents import RandomAgent
 from src.env.wrappers import AlphaHoldemWrapper
 from src.agent.ppo_agent import PPOAgent
 
-
+# [수정됨] 평가(Evaluate) 때는 실제 칩 개수를 그대로 봅니다 (직관성을 위해)
 def evaluate(agent, env, num_games=20):
-    """
-    현재 AI(Player 0) vs 랜덤 봇(Player 1) 평가전
-    """
     wins = 0
     total_rewards = 0
     
@@ -23,31 +19,22 @@ def evaluate(agent, env, num_games=20):
         done = False
         
         while not done:
-            # Player 0: 우리 AI (PPO)
             if player_id == 0:
-                # Deterministic=True: 시험 칠 때는 모험하지 않고 최선의 수만 둠
                 action, _ = agent.policy.get_action(state, deterministic=True)
-            
-            # Player 1: 랜덤 봇 (Random)
             else:
-                # Wrapper가 처리해주므로 랜덤하게 정수(0~4)만 뽑으면 됨
-                # 단, 합법적인 액션 중에서 골라야 함
-                # RLCard의 raw state에서 legal_actions 가져오기
                 raw_state = env.env.get_state(player_id)
-                legal_actions = list(raw_state['legal_actions'].keys())
-                # 랜덤 선택 (Wrapper가 0~4 매핑 처리하므로 이 인덱스가 중요)
-                # 하지만 우리는 Wrapper의 step(action_idx)를 부르므로
-                # Wrapper의 decode 로직에 맞춰야 함.
-                # 여기서는 간단히: 랜덤 봇은 그냥 아무거나 던지고 Wrapper가 처리하게 둠
-                # (더 정확히는 legal_actions 중 하나를 랜덤 선택)
+                if isinstance(raw_state['legal_actions'], dict):
+                    legal_actions = list(raw_state['legal_actions'].keys())
+                else:
+                    legal_actions = raw_state['legal_actions']
                 action = np.random.choice(legal_actions)
 
             next_state, next_player_id = env.step(action)
             
-            if next_state is None: # 게임 종료
+            if next_state is None:
                 done = True
                 payoffs = env.env.get_payoffs()
-                total_rewards += payoffs[0]
+                total_rewards += payoffs[0] # 여기는 나누기 안 함 (실제 칩 확인)
                 if payoffs[0] > 0:
                     wins += 1
             else:
@@ -57,29 +44,26 @@ def evaluate(agent, env, num_games=20):
     return wins / num_games * 100, total_rewards / num_games
 
 def run_training(num_episodes=5000, eval_interval=100):
-    # 1. TensorBoard 설정
-    writer = SummaryWriter("runs/AlphaHoldem_Day7")
+    writer = SummaryWriter("runs/AlphaHoldem_Day9") # 로그 폴더 변경
     
-    # 2. 환경 및 에이전트 설정
+    # RLCard 기본 칩 설정 (chips_for_each=100)
+    reward_scale = 100.0 
+    
     raw_env = rlcard.make('no-limit-holdem', config={'seed': 42})
     env = AlphaHoldemWrapper(raw_env)
     
-    # 액션 5개로 통일된 설정
+    # Input=107, Action=5
     agent = PPOAgent(input_dim=107, action_dim=5, lr=0.0002, K_epochs=4, eps_clip=0.2)
     
-    print(f"🚀 학습 시작! (총 {num_episodes} 에피소드, 텐서보드로 모니터링 중...)")
+    print(f"🚀 학습 시작! (Reward Scale: 1/{reward_scale} 적용)")
 
-    # 학습 루프
     for episode in range(1, num_episodes + 1):
         state, player_id = env.reset()
         episode_memory = {0: [], 1: []}
         done = False
         
         while not done:
-            # Self-Play: 항상 AI가 행동 결정
             action, probs = agent.policy.get_action(state)
-            
-            # [Day 6 수정사항 반영] 확률값(Scalar)만 저장
             action_prob = probs[0][action].item()
             
             episode_memory[player_id].append({
@@ -94,35 +78,37 @@ def run_training(num_episodes=5000, eval_interval=100):
                 state = next_state
                 player_id = next_player_id
 
-        # 게임 종료 및 데이터 저장
+        # --- [핵심 수정 구간] 보상 정규화 적용 ---
         payoffs = env.env.get_payoffs()
+        
         for pid in [0, 1]:
-            reward = payoffs[pid]
+            # 실제 칩(+100)을 스케일링(+1.0)해서 학습 데이터에 넣음
+            raw_reward = payoffs[pid]
+            normalized_reward = raw_reward / reward_scale 
+            
             memory = episode_memory[pid]
             for i, step_data in enumerate(memory):
                 s, a, prob = step_data['s'], step_data['a'], step_data['prob']
                 ns = memory[i+1]['s'] if i < len(memory)-1 else s
                 d = False if i < len(memory)-1 else True
-                agent.put_data((s, a, reward, ns, d, prob))
+                
+                # 정규화된 보상(normalized_reward) 주입
+                agent.put_data((s, a, normalized_reward, ns, d, prob))
 
-        # --- [Training] 학습 및 Loss 기록 ---
-        if len(agent.data) >= 256: # 배치 사이즈가 차면 학습
+        if len(agent.data) >= 256:
             loss = agent.train_net()
             writer.add_scalar("Training/Loss", loss, episode)
 
-        # --- [Evaluation] 주기적 평가 ---
         if episode % eval_interval == 0:
-            # 랜덤 봇과 50판 대결
+            # 평가는 기존처럼 (사람이 보기 편하게)
             win_rate, avg_reward = evaluate(agent, env, num_games=200)
             
-            print(f"Episode {episode}: Eval WinRate = {win_rate:.1f}% | AvgReward = {avg_reward:.2f}")
+            print(f"Episode {episode}: Eval WinRate = {win_rate:.1f}% | AvgReward = {avg_reward:.2f} chips")
             
-            # 텐서보드에 기록
             writer.add_scalar("Evaluation/WinRate_vs_Random", win_rate, episode)
             writer.add_scalar("Evaluation/AvgReward_vs_Random", avg_reward, episode)
             
-            # 모델 저장
-            torch.save(agent.policy.state_dict(), "alpha_holdem_day7.pth")
+            torch.save(agent.policy.state_dict(), "alpha_holdem_day9.pth")
 
     writer.close()
     print("✅ 학습 종료!")
