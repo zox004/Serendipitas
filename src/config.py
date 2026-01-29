@@ -1,6 +1,6 @@
 # 파일명: src/config.py
 import torch
-
+import os
 class AlphaHoldemConfig:
     # --- 1. 환경 및 데이터 설정 ---
     NUM_PLAYERS = 2
@@ -34,4 +34,13 @@ class AlphaHoldemConfig:
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     SEED = 42
     LOG_DIR = "runs/AlphaHoldem_Day11"
-    MODEL_PATH = "alpha_holdem_day11.pth"
+        
+    # [New] 체크포인트 설정
+    CHECKPOINT_DIR = "checkpoints"  # 저장할 폴더 이름
+    HISTORY_INTERVAL = 1000         # 몇 판마다 박제할 것인가? (1000판 추천)
+    
+    # 폴더가 없으면 자동으로 만듭니다
+    if not os.path.exists(CHECKPOINT_DIR):
+        os.makedirs(CHECKPOINT_DIR)
+        
+    MODEL_PATH = os.path.join(CHECKPOINT_DIR, "alpha_holdem_latest.pth")

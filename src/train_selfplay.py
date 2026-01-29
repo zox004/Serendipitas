@@ -7,6 +7,7 @@ import rlcard
 from src.config import AlphaHoldemConfig as cfg  # 별칭 cfg로 사용
 from src.env.wrappers import AlphaHoldemWrapper
 from src.agent.ppo_agent import PPOAgent
+from src.utils import save_checkpoint
 
 def evaluate(agent, env, num_games=20):
     wins = 0
@@ -58,7 +59,7 @@ def run_training():
     # [추가] 최고 승률 기록용 변수
     best_win_rate = -1.0
     
-    print(f"🚀 학습 시작! (Reward Scale: 1/{cfg.REWARD_SCALE} applied)")
+    print(f"🚀 학습 시작! (History Interval: {cfg.HISTORY_INTERVAL})")
 
     for episode in range(1, cfg.NUM_EPISODES + 1):
         # ... (게임 진행 및 데이터 수집 코드는 기존과 동일) ...
@@ -94,22 +95,25 @@ def run_training():
             win_rate, avg_reward = evaluate(agent, env, num_games=200)
             
             print(f"Episode {episode}: WinRate={win_rate:.1f}% | Reward={avg_reward:.2f}")
-            
             writer.add_scalar("Evaluation/WinRate_vs_Random", win_rate, episode)
             writer.add_scalar("Evaluation/AvgReward_vs_Random", avg_reward, episode)
             
-            # 1. 최신 모델은 항상 저장 (혹시 모르니)
+            # [기존] 최신/최고 모델 저장 (유지)
             torch.save(agent.policy.state_dict(), cfg.MODEL_PATH)
             
-            # 2. [핵심] 역대 최고 승률 갱신 시 별도 저장 (Best Model)
             if win_rate > best_win_rate:
                 best_win_rate = win_rate
-                best_path = cfg.MODEL_PATH.replace(".pth", "_best.pth")
+                best_path = os.path.join(cfg.CHECKPOINT_DIR, "alpha_holdem_best.pth")
                 torch.save(agent.policy.state_dict(), best_path)
                 print(f"🏆 최고 승률 갱신! ({best_win_rate:.1f}%) -> {best_path} 저장됨")
 
+            # [New!] 역사박물관(Checkpoints)에 저장
+            # 설정한 주기(예: 1000판)마다 별도로 영구 저장
+            if episode % cfg.HISTORY_INTERVAL == 0:
+                save_checkpoint(agent, episode, win_rate)
+
     writer.close()
-    print("✅ 모든 학습이 완료되었습니다.")
+    print("✅ 학습 종료!")
 
 if __name__ == "__main__":
     run_training()
