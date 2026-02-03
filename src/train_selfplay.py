@@ -59,7 +59,11 @@ def run_training():
 
     for episode in range(1, cfg.NUM_EPISODES + 1):
         # --- [1] 이번 판의 상대 결정 ---
-        opponent = league.get_opponent()
+        opponent, opponent_info = league.get_opponent()
+        
+        # opponent가 None이면 Self-Play (초기 단계)
+        if opponent is None:
+            opponent_info = "Self-Play"
         
         state, player_id = env.reset()
         episode_memory = {0: [], 1: []} 
@@ -71,24 +75,18 @@ def run_training():
             is_training_turn = False 
 
             if opponent is None:
+                # Self-Play: 두 플레이어 모두 현재 agent 사용
                 action, probs = agent.policy.get_action(state)
                 is_training_turn = True
             else:
                 if player_id == train_player_id:
+                    # 학습 플레이어: 현재 agent
                     action, probs = agent.policy.get_action(state)
                     is_training_turn = True
                 else:
-                    if opponent == "random":
-                        raw_state = env.env.get_state(player_id)
-                        if isinstance(raw_state['legal_actions'], dict):
-                            legal_actions = list(raw_state['legal_actions'].keys())
-                        else:
-                            legal_actions = raw_state['legal_actions']
-                        action = random.choice(legal_actions)
-                        probs = None 
-                    else:
-                        action, _ = opponent.get_action(state, deterministic=True)
-                        probs = None
+                    # 상대 플레이어: 과거 모델
+                    action, _ = opponent.get_action(state, deterministic=True)
+                    probs = None
 
             # --- [3] 데이터 저장 ---
             if is_training_turn:
@@ -108,7 +106,7 @@ def run_training():
 
         # --- [5] 보상 계산 및 PPO 데이터 주입 ---
         payoffs = env.env.get_payoffs()
-        players_to_train = [0, 1] if opponent is None else [train_player_id]
+        players_to_train = [train_player_id]
         
         for pid in players_to_train:
             normalized_reward = payoffs[pid] / cfg.REWARD_SCALE
@@ -123,17 +121,12 @@ def run_training():
         if len(agent.data) >= cfg.BATCH_SIZE:
             loss = agent.train_net()
             writer.add_scalar("Training/Loss", loss, episode)
-            # [삭제됨] 여기에 있던 refresh_pool은 실행이 보장되지 않아 제거함
 
         # --- [7] 평가 및 저장, 그리고 리그 갱신 ---
         if episode % cfg.EVAL_INTERVAL == 0:
             win_rate, avg_reward = evaluate(agent, env, num_games=200)
             
-            opp_name = "Self-Play"
-            if opponent == "random": opp_name = "Random"
-            elif opponent is not None: opp_name = "Past-Model"
-            
-            print(f"Ep {episode}: WR={win_rate:.1f}% | R={avg_reward:.2f} | Opp={opp_name}")
+            print(f"Ep {episode}: WR={win_rate:.1f}% | R={avg_reward:.2f} | Opp={opponent_info}")
             writer.add_scalar("Evaluation/WinRate_vs_Random", win_rate, episode)
             writer.add_scalar("Evaluation/AvgReward_vs_Random", avg_reward, episode)
             
@@ -141,15 +134,9 @@ def run_training():
             
             if win_rate > best_win_rate:
                 best_win_rate = win_rate
-                best_path = os.path.join(cfg.CHECKPOINT_DIR, "alpha_holdem_best.pth")
-                torch.save(agent.policy.state_dict(), best_path)
-                print(f"🏆 최고 승률 갱신! ({best_win_rate:.1f}%)")
+                print(f"🏆 최고 승률 갱신! ({best_win_rate:.1f}%) | 상대: {opponent_info}")
 
-            if episode % cfg.HISTORY_INTERVAL == 0:
                 save_checkpoint(agent, episode, win_rate)
-                
-                # [위치 이동 완료]
-                # 체크포인트 저장 직후에 풀을 갱신해야 가장 확실하게 로드됩니다.
                 print("🔄 리그 선수 명단 갱신 중...")
                 league.refresh_pool()
 
