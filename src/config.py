@@ -33,7 +33,7 @@ class AlphaHoldemConfig:
     # --- 3. 시스템 설정 ---
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     SEED = 42
-    LOG_DIR = "runs/AlphaHoldem_Day13"
+    LOG_DIR = "runs/AlphaHoldem_Day15"
         
     # [New] 체크포인트 설정
     CHECKPOINT_DIR = "checkpoints"  # 저장할 폴더 이름
