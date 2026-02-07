@@ -34,18 +34,19 @@ class AlphaHoldemConfig:
     EPS_CLIP = 0.2        
     BATCH_SIZE = 128      
     
-    NUM_EPISODES = 50000  
-    EVAL_INTERVAL = 100   
+    NUM_EPISODES = 50000
+    EVAL_INTERVAL = 100
     REWARD_SCALE = 100.0
     
     # --- 3. 시스템 설정 ---
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     SEED = 42
-    LOG_DIR = "runs/AlphaHoldem_v2.0-Siamese"
+    LOG_DIR = "runs/AlphaHoldem_v2.1-Siamese"
     
     CHECKPOINT_DIR = "checkpoints"
     
     if not os.path.exists(CHECKPOINT_DIR):
         os.makedirs(CHECKPOINT_DIR)
         
-    MODEL_PATH = os.path.join(CHECKPOINT_DIR, "alpha_holdem_siamese.pth")
+    MODEL_NAME = "alpha_holdem_latest.pth"
+    MODEL_PATH = os.path.join(CHECKPOINT_DIR, MODEL_NAME)
