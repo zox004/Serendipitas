@@ -1,32 +1,40 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical # [추가됨] 확률 분포 계산용
+from torch.distributions import Categorical
 from src.config import AlphaHoldemConfig as cfg
+
+class ConvBlock(nn.Module):
+    """
+    기본 컨볼루션 블록: Conv2d -> BatchNorm -> ReLU
+    Padding=1을 사용하여 입력의 H, W 크기를 유지합니다.
+    """
+    def __init__(self, in_channels, out_channels):
+        super(ConvBlock, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        return self.relu(self.bn(self.conv(x)))
 
 class ResidualBlock(nn.Module):
     """
-    ResNet의 핵심 건물 블록 (층)
-    입력 -> [Linear -> BatchNorm -> ReLU -> Linear -> BatchNorm] + 입력 -> ReLU
+    ResNet의 핵심 블록: 입력을 출력에 더해주는 Skip Connection 포함
+    구조: Input -> [Conv -> BN -> ReLU -> Conv -> BN] + Input -> ReLU
     """
-    def __init__(self, dim):
+    def __init__(self, channels):
         super(ResidualBlock, self).__init__()
-        self.fc1 = nn.Linear(dim, dim)
-        self.bn1 = nn.BatchNorm1d(dim)
-        self.fc2 = nn.Linear(dim, dim)
-        self.bn2 = nn.BatchNorm1d(dim)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
 
     def forward(self, x):
-        residual = x  # 입력을 기억해둠 (지름길)
-        
-        out = self.fc1(x)
-        out = self.bn1(out)
-        out = F.relu(out)
-        
-        out = self.fc2(out)
-        out = self.bn2(out)
-        
-        out += residual  # 기억해둔 원본을 더함 (핵심!)
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual  # Skip Connection (핵심)
         out = F.relu(out)
         return out
 
@@ -34,72 +42,107 @@ class AlphaHoldemResNet(nn.Module):
     def __init__(self):
         super(AlphaHoldemResNet, self).__init__()
         
-        # 1. 입력층 (Input -> Hidden)
-        self.input_layer = nn.Sequential(
-            nn.Linear(cfg.INPUT_DIM, cfg.HIDDEN_DIM),
-            nn.ReLU()
-        )
+        # ==========================================
+        # Branch 1: Card Processing (CNN)
+        # Input: (Batch, 6, 4, 13)
+        # ==========================================
+        self.card_conv = ConvBlock(cfg.CARD_CHANNELS, 64)
+        self.card_res = nn.Sequential(*[
+            ResidualBlock(64) for _ in range(cfg.NUM_RES_BLOCKS)
+        ])
+        # Flatten Dimension: 64 * 4 * 13 = 3328
+        self.card_flat_dim = 64 * cfg.CARD_HEIGHT * cfg.CARD_WIDTH
         
-        # 2. ResNet 블록 쌓기 (몸통)
-        blocks = []
-        for _ in range(cfg.NUM_RES_BLOCKS):
-            blocks.append(ResidualBlock(cfg.HIDDEN_DIM))
-        self.res_blocks = nn.Sequential(*blocks)
+        # ==========================================
+        # Branch 2: Betting History Processing (CNN)
+        # Input: (Batch, 24, 4, 5)
+        # ==========================================
+        self.hist_conv = ConvBlock(cfg.HIST_CHANNELS, 64)
+        self.hist_res = nn.Sequential(*[
+            ResidualBlock(64) for _ in range(cfg.NUM_RES_BLOCKS)
+        ])
+        # Flatten Dimension: 64 * 4 * 5 = 1280
+        self.hist_flat_dim = 64 * cfg.HIST_HEIGHT * cfg.HIST_WIDTH
         
-        # 3-1. Actor Head (행동 결정: 확률 출력)
+        # ==========================================
+        # Merge & Heads
+        # ==========================================
+        total_dim = self.card_flat_dim + self.hist_flat_dim # 3328 + 1280 = 4608
+        
+        self.fc_merge = nn.Linear(total_dim, cfg.HIDDEN_DIM)
+        
+        # Actor Head (행동 확률)
         self.actor_head = nn.Sequential(
             nn.Linear(cfg.HIDDEN_DIM, cfg.ACTION_DIM),
             nn.Softmax(dim=-1)
         )
         
-        # 3-2. Critic Head (가치 판단: 점수 출력)
+        # Critic Head (가치 평가)
         self.critic_head = nn.Linear(cfg.HIDDEN_DIM, 1)
 
+        # 가중치 초기화 (학습 안정성 향상)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                nn.init.constant_(m.bias, 0)
+
     def forward(self, x):
-        # x shape: (batch, input_dim)
+        """
+        x: (card_tensor, hist_tensor) 튜플
+        """
+        card_x, hist_x = x
         
-        # 입력층 통과
-        out = self.input_layer(x)
+        # 배치 차원 확인 및 추가 (Single inference 대응)
+        if card_x.dim() == 3: card_x = card_x.unsqueeze(0)
+        if hist_x.dim() == 3: hist_x = hist_x.unsqueeze(0)
         
-        # ResNet은 배치 단위(여러 개) 처리가 기본이라 차원 문제 방지
-        if out.dim() == 1: 
-             out = out.unsqueeze(0)
-             
-        # ResNet 블록 통과
-        out = self.res_blocks(out)
+        # 1. Card Branch Forward
+        c = self.card_conv(card_x)
+        c = self.card_res(c)
+        c = c.view(c.size(0), -1) # Flatten (Batch, 3328)
         
-        probs = self.actor_head(out)
-        value = self.critic_head(out)
+        # 2. History Branch Forward
+        h = self.hist_conv(hist_x)
+        h = self.hist_res(h)
+        h = h.view(h.size(0), -1) # Flatten (Batch, 1280)
+        
+        # 3. Merge & Heads
+        combined = torch.cat([c, h], dim=1)        # (Batch, 4608)
+        features = F.relu(self.fc_merge(combined)) # (Batch, 256)
+        
+        probs = self.actor_head(features)
+        value = self.critic_head(features)
         
         return probs, value
 
     def get_action(self, x, deterministic=False):
-            """
-            상태(x)를 받아서 실제로 할 행동(action)을 결정하는 함수
-            """
-            # [수정됨] BatchNorm 에러 방지 코드
-            # 1. 현재 모드 저장 (Train 모드인지 확인)
-            is_training = self.training
+        """
+        외부에서 호출하는 행동 결정 함수
+        """
+        is_training = self.training
+        
+        # 추론 모드 전환 (BatchNorm 고정 등)
+        self.eval()
+        
+        with torch.no_grad():
+            probs, _ = self.forward(x)
+            m = Categorical(probs)
             
-            # 2. 평가 모드로 전환 (Batch Size가 1이어도 에러 안 남)
-            self.eval()
+            if deterministic:
+                action = torch.argmax(probs, dim=1)
+            else:
+                action = m.sample()
+        
+        # 학습 중이었다면 다시 학습 모드로 복구
+        if is_training:
+            self.train()
             
-            # 3. 그라디언트 계산 끄기 (속도 향상 및 메모리 절약)
-            with torch.no_grad():
-                # 1. 신경망을 통과시켜 확률(probs)을 얻음
-                probs, _ = self.forward(x)
-                
-                # 2. 확률 분포 생성
-                m = Categorical(probs)
-                
-                # 3. 행동 선택
-                if deterministic:
-                    action = torch.argmax(probs, dim=1)
-                else:
-                    action = m.sample()
-            
-            # 4. 원래 모드로 복구 (나중에 학습을 위해)
-            if is_training:
-                self.train()
-                
-            return action.item(), probs
+        return action.item(), probs

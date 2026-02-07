@@ -1,3 +1,4 @@
+# 파일명: src/train_selfplay.py
 import os
 import torch
 import numpy as np
@@ -11,22 +12,32 @@ from src.agent.ppo_agent import PPOAgent
 from src.league import LeagueManager
 from src.utils import save_checkpoint
 
+# [추가] 튜플 상태((Card, Hist))를 디바이스로 이동시키는 헬퍼 함수
+def to_device(state):
+    card, hist = state
+    return (card.to(cfg.DEVICE), hist.to(cfg.DEVICE))
+
 def evaluate(agent, env, num_games=20):
     wins = 0
     total_rewards = 0
+    
     for _ in range(num_games):
         state, player_id = env.reset()
         done = False
         while not done:
             if player_id == 0:
-                action, _ = agent.policy.get_action(state, deterministic=True)
+                # [수정] 추론 시에는 GPU 텐서 사용
+                state_device = to_device(state)
+                action, _ = agent.policy.get_action(state_device, deterministic=True)
             else:
+                # 상대방(Random/Rule)은 rlcard raw state 사용
                 raw_state = env.env.get_state(player_id)
                 if isinstance(raw_state['legal_actions'], dict):
                      legal_actions = list(raw_state['legal_actions'].keys())
                 else:
                      legal_actions = raw_state['legal_actions']
                 action = np.random.choice(legal_actions)
+                
             next_state, next_player_id = env.step(action)
             if next_state is None:
                 done = True
@@ -45,7 +56,7 @@ def run_training():
     env = AlphaHoldemWrapper(raw_env)
     
     agent = PPOAgent(
-        input_dim=cfg.INPUT_DIM, 
+        input_dim=None, # Config에서 처리하므로 None
         action_dim=cfg.ACTION_DIM, 
         lr=cfg.LR, 
         K_epochs=cfg.K_EPOCHS, 
@@ -60,8 +71,6 @@ def run_training():
     for episode in range(1, cfg.NUM_EPISODES + 1):
         # --- [1] 이번 판의 상대 결정 ---
         opponent, opponent_info = league.get_opponent()
-        
-        # opponent가 None이면 Self-Play (초기 단계)
         if opponent is None:
             opponent_info = "Self-Play"
         
@@ -73,24 +82,29 @@ def run_training():
         while not done:
             # --- [2] 행동 결정 ---
             is_training_turn = False 
+            
+            # [수정] 모델 입력을 위해 GPU로 이동
+            state_device = to_device(state)
 
             if opponent is None:
-                # Self-Play: 두 플레이어 모두 현재 agent 사용
-                action, probs = agent.policy.get_action(state)
+                # Self-Play
+                action, probs = agent.policy.get_action(state_device)
                 is_training_turn = True
             else:
                 if player_id == train_player_id:
-                    # 학습 플레이어: 현재 agent
-                    action, probs = agent.policy.get_action(state)
+                    # 학습 플레이어
+                    action, probs = agent.policy.get_action(state_device)
                     is_training_turn = True
                 else:
-                    # 상대 플레이어: 과거 모델
-                    action, _ = opponent.get_action(state, deterministic=True)
+                    # 상대 플레이어 (과거 모델)
+                    # 상대 모델도 GPU에 있으므로 state_device 사용
+                    action, _ = opponent.get_action(state_device, deterministic=True)
                     probs = None
 
             # --- [3] 데이터 저장 ---
             if is_training_turn:
                 action_prob = probs[0][action].item()
+                # [중요] 저장할 때는 원본(CPU) state를 저장해야 VRAM 절약됨
                 episode_memory[player_id].append({
                     's': state, 'a': action, 'prob': action_prob
                 })
@@ -113,8 +127,11 @@ def run_training():
             memory = episode_memory[pid]
             for i, step_data in enumerate(memory):
                 s, a, prob = step_data['s'], step_data['a'], step_data['prob']
+                # ns도 튜플(CPU) 상태
                 ns = memory[i+1]['s'] if i < len(memory)-1 else s
                 d = False if i < len(memory)-1 else True
+                
+                # put_data는 CPU 텐서를 받아서 보관 (make_batch 때 GPU 이동)
                 agent.put_data((s, a, normalized_reward, ns, d, prob))
 
         # --- [6] 학습 수행 ---
@@ -122,7 +139,7 @@ def run_training():
             loss = agent.train_net()
             writer.add_scalar("Training/Loss", loss, episode)
 
-        # --- [7] 평가 및 저장, 그리고 리그 갱신 ---
+        # --- [7] 평가 및 저장 ---
         if episode % cfg.EVAL_INTERVAL == 0:
             win_rate, avg_reward = evaluate(agent, env, num_games=200)
             
@@ -135,9 +152,7 @@ def run_training():
             if win_rate > best_win_rate:
                 best_win_rate = win_rate
                 print(f"🏆 최고 승률 갱신! ({best_win_rate:.1f}%) | 상대: {opponent_info}")
-
                 save_checkpoint(agent, episode, win_rate)
-                print("🔄 리그 선수 명단 갱신 중...")
                 league.refresh_pool()
 
     writer.close()

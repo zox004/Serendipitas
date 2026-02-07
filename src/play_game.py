@@ -64,7 +64,7 @@ def run_game():
     
     # 2. 모델 로드
     agent = AlphaHoldemResNet().to(cfg.DEVICE)
-    model_path = os.path.join(cfg.CHECKPOINT_DIR, "alpha_holdem_best.pth")
+    model_path = os.path.join(cfg.CHECKPOINT_DIR, "alpha_holdem_siamese.pth")
     
     if not os.path.exists(model_path):
         print(f"❌ 모델 파일이 없습니다: {model_path}")
